@@ -4,7 +4,7 @@ services:
     runtime: python
     rootDir: telegram-bot
     numInstances: 1
-    plan: starter
+    plan: free
     region: singapore
     buildCommand: pip install -r requirements.txt
     startCommand: python main.py
@@ -15,22 +15,16 @@ services:
         sync: false
       - key: BOT_RUN_MODE
         value: webhook
-      - key: SMTP_HOST
-        value: smtp.office365.com
-      - key: SMTP_PORT
-        value: "587"
-      - key: SMTP_USERNAME
-        sync: false
-      - key: SMTP_PASSWORD
-        sync: false
-      - key: SMTP_FROM_EMAIL
-        sync: false
-      - key: SMTP_USE_TLS
+      - key: FREE_PLAN_MODE
         value: "true"
+      - key: EMAIL_DELIVERY_ENABLED
+        value: "false"
+      - key: USER_EMAIL_REQUIRED
+        value: "false"
+      - key: MONTHLY_REPORT_ENABLED
+        value: "false"
       - key: APP_TIMEZONE
         value: Asia/Yangon
-      - key: MONTHLY_REPORT_RECIPIENT_EMAIL
-        sync: false
       - key: MONTHLY_REPORT_SEND_HOUR
         value: "9"
       - key: MONTHLY_REPORT_SEND_MINUTE
@@ -44,8 +38,4 @@ services:
       - key: DROP_PENDING_UPDATES
         value: "false"
       - key: DATA_DIR
-        value: /opt/render/project/src/telegram-bot/data
-    disk:
-      name: bot-data
-      mountPath: /opt/render/project/src/telegram-bot/data
-      sizeGB: 1
+        value: ./data

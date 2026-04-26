@@ -8,9 +8,9 @@ This is a Telegram Bot built with Python and the `python-telegram-bot` library f
 
 - **/start** command: Technician-only welcome message.
 - Technician can create new service logs step by step (device name, user name, user email, service choice, parts used).
-- Send service notification to the user by email.
+- Optional email notification mode for the user.
 - **/history** command: View past service logs for technicians.
-- Auto-send monthly Excel export to your report email on the 1st day of every month.
+- Optional monthly Excel export email on the 1st day of every month.
 - Stores all data in an SQLite database.
 
 ## Setup Instructions (တပ်ဆင်နည်း)
@@ -45,6 +45,10 @@ Create a `.env` file in the same folder as `main.py` and add your Telegram Bot T
 ```env
 BOT_TOKEN=YOUR_BOT_TOKEN_HERE
 BOT_RUN_MODE=polling
+FREE_PLAN_MODE=false
+EMAIL_DELIVERY_ENABLED=true
+USER_EMAIL_REQUIRED=true
+MONTHLY_REPORT_ENABLED=true
 SMTP_HOST=smtp.office365.com
 SMTP_PORT=587
 SMTP_USERNAME=YOUR_EMAIL@outlook.com
@@ -85,6 +89,10 @@ Your bot should now be running and accessible via Telegram.
 ```env
 BOT_TOKEN=PASTE_YOUR_NEW_TOKEN_HERE
 BOT_RUN_MODE=polling
+FREE_PLAN_MODE=false
+EMAIL_DELIVERY_ENABLED=true
+USER_EMAIL_REQUIRED=true
+MONTHLY_REPORT_ENABLED=true
 SMTP_HOST=smtp.office365.com
 SMTP_PORT=587
 SMTP_USERNAME=YOUR_EMAIL@outlook.com
@@ -121,7 +129,7 @@ python3 main.py
 1. Start the bot: Send `/start`
 2. Create new log: Send `/newlog`
 3. Follow prompts to enter: Device Name, User Name, User Email, Service Type, Parts Used.
-   - **User Email**: The bot will send the service notification email to this address through your SMTP account.
+   - **User Email**: Required only when email delivery is enabled.
    - **Service Type choices**: `Body Service`, `Windows Service`, `Device Clean`, `Software Installation`, `Small Repairs`
 
 ## Microsoft Mail Notes
@@ -138,6 +146,30 @@ python3 main.py
 - Set `MONTHLY_REPORT_RECIPIENT_EMAIL` to the email that should receive the file.
 - Default schedule is `09:00` in `Asia/Yangon`. You can change it with `MONTHLY_REPORT_SEND_HOUR`, `MONTHLY_REPORT_SEND_MINUTE`, and `APP_TIMEZONE`.
 - The bot must be running for the scheduler to send the report automatically.
+
+## Lite Mode For Render Free
+
+Render free web services are useful for testing, but they have important limits:
+
+- No persistent disk
+- Outbound SMTP on port `587` is not supported
+- The service can spin down when idle
+
+Because of those limits, this project includes a lightweight deployment mode:
+
+- `FREE_PLAN_MODE=true`
+- `EMAIL_DELIVERY_ENABLED=false`
+- `USER_EMAIL_REQUIRED=false`
+- `MONTHLY_REPORT_ENABLED=false`
+
+In lite mode:
+
+- The bot still accepts `/newlog`, `/history`, and `/export`
+- User email collection is skipped
+- Service logs are saved locally only
+- Email notifications are disabled
+- Monthly auto-email reports are disabled
+- SQLite data can be lost whenever the free service restarts or redeploys
 
 ## Database Schema (ဒေတာဘေ့စ် ပုံစံ)
 
@@ -176,6 +208,7 @@ This project can now run on Render as a `Web Service`.
 - Local development can stay on `BOT_RUN_MODE=polling`.
 - Render should use `BOT_RUN_MODE=webhook`.
 - In webhook mode, the app starts an HTTP server, exposes a health endpoint, and registers a Telegram webhook automatically.
+- The included Blueprint is tuned for Render's `free` instance type.
 
 ### Render-ready files in this repo
 
@@ -187,11 +220,12 @@ This project can now run on Render as a `Web Service`.
 
 - SQLite database path is now configurable.
 - Export directory is now configurable.
-- Data defaults to a persistent-friendly `data/` folder.
+- Data defaults to a local `data/` folder.
 - Database initialization now runs automatically at startup.
 - A webhook-based Render web service Blueprint was added.
 - A `/healthz` endpoint was added for Render health checks.
 - The app can auto-use Render's `RENDER_EXTERNAL_URL` as the Telegram webhook base URL.
+- Lite mode disables SMTP-dependent and always-on-only features by default.
 
 ### Blueprint deploy steps
 
@@ -201,10 +235,6 @@ This project can now run on Render as a `Web Service`.
 4. Deploy the Blueprint and let Render create the web service.
 5. Fill in these secret environment variables in Render:
    - `BOT_TOKEN`
-   - `SMTP_USERNAME`
-   - `SMTP_PASSWORD`
-   - `SMTP_FROM_EMAIL`
-   - `MONTHLY_REPORT_RECIPIENT_EMAIL`
    - `WEBHOOK_SECRET_TOKEN`
 
 ### How webhook mode works on Render
@@ -227,26 +257,17 @@ https://your-service.onrender.com/telegram/webhook
 ### Default environment values used by the Blueprint
 
 - `BOT_RUN_MODE=webhook`
-- `SMTP_HOST=smtp.office365.com`
-- `SMTP_PORT=587`
-- `SMTP_USE_TLS=true`
+- `FREE_PLAN_MODE=true`
+- `EMAIL_DELIVERY_ENABLED=false`
+- `USER_EMAIL_REQUIRED=false`
+- `MONTHLY_REPORT_ENABLED=false`
 - `APP_TIMEZONE=Asia/Yangon`
 - `MONTHLY_REPORT_SEND_HOUR=9`
 - `MONTHLY_REPORT_SEND_MINUTE=0`
 - `WEBHOOK_PATH=/telegram/webhook`
 - `HEALTHCHECK_PATH=/healthz`
 - `DROP_PENDING_UPDATES=false`
-- `DATA_DIR=/opt/render/project/src/telegram-bot/data`
-
-### Persistent disk
-
-The Blueprint attaches a Render persistent disk at:
-
-```text
-/opt/render/project/src/telegram-bot/data
-```
-
-This is important because Render's filesystem is ephemeral by default. Without a disk, your SQLite database and exported CSV/Excel files would be lost after restart or redeploy.
+- `DATA_DIR=./data`
 
 ### If you deploy manually instead of using Blueprint
 
@@ -258,12 +279,12 @@ Use these settings in Render:
 - Build Command: `pip install -r requirements.txt`
 - Start Command: `python main.py`
 - Health Check Path: `/healthz`
-- Plan: `starter` or higher
-- Disk Mount Path: `/opt/render/project/src/telegram-bot/data`
+- Plan: `free`
 
 ### Current deployment limitations
 
 - This bot is designed for a single running instance because it uses SQLite.
-- Do not run multiple instances against the same SQLite disk.
-- Monthly report sending works only while the web service stays online continuously.
+- On Render free, data can be lost when the service restarts or redeploys.
+- Email notifications and monthly auto-email reports are disabled in the included free-plan Blueprint.
+- Free services can spin down on idle, so the first Telegram message after idle might be delayed.
 - If you switch between polling and webhook deployments, let the new deployment fully start so it can register the correct Telegram delivery mode.

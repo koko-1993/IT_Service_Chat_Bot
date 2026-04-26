@@ -75,6 +75,10 @@ BOT_RUN_MODE = os.getenv(
     "BOT_RUN_MODE",
     "webhook" if WEBHOOK_BASE_URL or os.getenv("RENDER_SERVICE_TYPE") == "web" else "polling",
 ).strip().lower()
+FREE_PLAN_MODE = env_flag("FREE_PLAN_MODE", default=False)
+EMAIL_DELIVERY_ENABLED = env_flag("EMAIL_DELIVERY_ENABLED", default=not FREE_PLAN_MODE)
+MONTHLY_REPORT_ENABLED = env_flag("MONTHLY_REPORT_ENABLED", default=not FREE_PLAN_MODE)
+USER_EMAIL_REQUIRED = env_flag("USER_EMAIL_REQUIRED", default=EMAIL_DELIVERY_ENABLED)
 
 SERVICE_OPTIONS = [
     "Body Service",
@@ -91,6 +95,8 @@ def get_db_connection():
     return conn
 
 def add_service_log(technician_name, device_id, user_name, user_email, service_done, parts_used, technician_chat_id):
+    delivery_method = "email" if EMAIL_DELIVERY_ENABLED and user_email else "telegram"
+    status = "Email Pending" if delivery_method == "email" else "Saved Locally"
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute(
@@ -108,8 +114,8 @@ def add_service_log(technician_name, device_id, user_name, user_email, service_d
             service_done,
             parts_used,
             technician_chat_id,
-            "email",
-            "Email Sent",
+            delivery_method,
+            status,
         ),
     )
     log_id = cursor.lastrowid
@@ -534,6 +540,9 @@ def seconds_until_next_monthly_run(now: datetime | None = None) -> float:
 
 
 async def run_monthly_report_job() -> None:
+    if not MONTHLY_REPORT_ENABLED:
+        logger.info("Monthly report skipped because MONTHLY_REPORT_ENABLED is false.")
+        return
     if not MONTHLY_REPORT_RECIPIENT_EMAIL:
         logger.warning("Monthly report skipped because MONTHLY_REPORT_RECIPIENT_EMAIL is not configured.")
         return
@@ -562,6 +571,9 @@ async def run_monthly_report_job() -> None:
 
 
 async def monthly_report_scheduler() -> None:
+    if not MONTHLY_REPORT_ENABLED:
+        logger.info("Monthly report scheduler is disabled.")
+        return
     logger.info(
         "Monthly report scheduler started. Recipient=%s schedule=%02d:%02d %s",
         MONTHLY_REPORT_RECIPIENT_EMAIL,
@@ -588,7 +600,8 @@ async def monthly_report_scheduler() -> None:
 
 
 async def post_init(application: Application) -> None:
-    application.bot_data["monthly_report_task"] = asyncio.create_task(monthly_report_scheduler())
+    if MONTHLY_REPORT_ENABLED:
+        application.bot_data["monthly_report_task"] = asyncio.create_task(monthly_report_scheduler())
 
 
 async def post_shutdown(application: Application) -> None:
@@ -603,6 +616,16 @@ async def post_shutdown(application: Application) -> None:
 # Commands (အမိန့်များ)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Sends a technician-only welcome message."""
+    email_line = (
+        "Service email notifications are enabled."
+        if EMAIL_DELIVERY_ENABLED
+        else "Lite mode is enabled. Service emails and monthly auto emails are disabled."
+    )
+    report_line = (
+        "Monthly Excel report ကို လစဉ် auto email ပို့မည်။"
+        if MONTHLY_REPORT_ENABLED
+        else "Monthly auto email report is disabled in this deployment."
+    )
     await update.message.reply_text(
         "မင်္ဂလာပါ! ဒီ bot ကို Technician သီးသန့်အသုံးပြုပါသည်။\n"
         "Welcome! This bot is for technicians only.\n\n"
@@ -610,7 +633,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/newlog - ဝန်ဆောင်မှုမှတ်တမ်းအသစ် ဖန်တီးရန်\n"
         "/history - မှတ်တမ်းများ ကြည့်ရန်\n"
         "/export - CSV/Excel ဖိုင် export ထုတ်ရန်\n"
-        "Monthly Excel report ကို လစဉ် auto email ပို့မည်။"
+        f"{email_line}\n"
+        f"{report_line}"
+    )
+
+
+async def prompt_for_service_type(chat_id: int, bot) -> None:
+    keyboard = [
+        [InlineKeyboardButton(option, callback_data=f"service_option_{index}")]
+        for index, option in enumerate(SERVICE_OPTIONS)
+    ]
+    await bot.send_message(
+        chat_id=chat_id,
+        text="ကျေးဇူးပြု၍ Service Type ကို ရွေးချယ်ပါ။\nPlease choose the Service Type:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -666,8 +702,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("ကျေးဇူးပြု၍ အသုံးပြုသူ၏အမည် (User Name) ကို ထည့်သွင်းပါ။\nPlease enter the User Name:")
     elif state == "waiting_user_name":
         user_data[user_id]["user_name"] = text
-        user_data[user_id]["state"] = "waiting_user_email"
-        await update.message.reply_text("ကျေးဇူးပြု၍ အသုံးပြုသူ၏ Email Address ကို ထည့်သွင်းပါ။\nPlease enter the User Email Address:")
+        if USER_EMAIL_REQUIRED:
+            user_data[user_id]["state"] = "waiting_user_email"
+            await update.message.reply_text("ကျေးဇူးပြု၍ အသုံးပြုသူ၏ Email Address ကို ထည့်သွင်းပါ။\nPlease enter the User Email Address:")
+        else:
+            user_data[user_id]["user_email"] = None
+            user_data[user_id]["state"] = "waiting_service_done"
+            await update.message.reply_text(
+                "Lite mode ဖြစ်သောကြောင့် user email step ကို ကျော်သွားပါသည်。\n"
+                "Lite mode is enabled, so the user email step is skipped."
+            )
+            await prompt_for_service_type(update.effective_chat.id, context.bot)
     elif state == "waiting_user_email":
         if not is_valid_email(text):
             await update.message.reply_text("Email format မမှန်ကန်ပါ။ ကျေးဇူးပြု၍ မှန်ကန်သော email address ကို ထည့်သွင်းပါ။\nInvalid email format. Please enter a valid email address.")
@@ -675,14 +720,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
         user_data[user_id]["user_email"] = text
         user_data[user_id]["state"] = "waiting_service_done"
-        keyboard = [
-            [InlineKeyboardButton(option, callback_data=f"service_option_{index}")]
-            for index, option in enumerate(SERVICE_OPTIONS)
-        ]
-        await update.message.reply_text(
-            "ကျေးဇူးပြု၍ Service Type ကို ရွေးချယ်ပါ။\nPlease choose the Service Type:",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-        )
+        await prompt_for_service_type(update.effective_chat.id, context.bot)
     elif state == "waiting_service_done":
         await update.message.reply_text(
             "Service Done ကို button ဖြင့် ရွေးချယ်ပေးပါ။\n"
@@ -694,7 +732,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         del user_data[user_id]
 
 async def send_service_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE, technician_user_id: int) -> None:
-    """Sends the service notification email to the user and stores the log."""
+    """Sends the service notification email when enabled, otherwise stores the log only."""
     data = user_data[technician_user_id]
     technician_name = update.effective_user.full_name
     device_id = data["device_id"]
@@ -713,6 +751,15 @@ async def send_service_confirmation(update: Update, context: ContextTypes.DEFAUL
         parts_used=parts_used,
         technician_chat_id=update.effective_chat.id
     )
+
+    if not EMAIL_DELIVERY_ENABLED:
+        update_service_log_status(log_id, "Saved Locally (Lite Mode)")
+        await update.message.reply_text(
+            f"ဝန်ဆောင်မှုမှတ်တမ်း #{log_id} ကို local log အဖြစ် သိမ်းပြီးပါပြီ။\n"
+            "Lite mode ဖြစ်သောကြောင့် email မပို့ပါ။\n"
+            f"Service log #{log_id} saved locally. Email delivery is disabled in lite mode."
+        )
+        return
 
     subject = f"Service Slip - {device_id}"
     email_body = build_service_slip_text(
@@ -969,6 +1016,9 @@ def main() -> None:
     logger.info("Using database at %s", DB_PATH)
     logger.info("Using export directory at %s", EXPORT_DIR)
     logger.info("Bot run mode: %s", run_mode)
+    logger.info("Free plan mode: %s", FREE_PLAN_MODE)
+    logger.info("Email delivery enabled: %s", EMAIL_DELIVERY_ENABLED)
+    logger.info("Monthly report enabled: %s", MONTHLY_REPORT_ENABLED)
     if WEBHOOK_BASE_URL:
         logger.info("Webhook base URL: %s", WEBHOOK_BASE_URL)
 
