@@ -1,0 +1,9 @@
+.env
+__pycache__/
+exports/
+data/
+myenv/
+*.db
+*.sqlite3
+*.csv
+*.xlsx
